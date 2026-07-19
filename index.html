@@ -401,76 +401,68 @@
         return formatted.trim();
     }
 
-    function renderDisplay(rawTtml, meta) {
-        showError(null);
-        document.getElementById('copy-part1').style.display = 'none';
-        document.getElementById('copy-part2').style.display = 'none';
-        part1Text = "";
-        part2Text = "";
+function renderDisplay(rawTtml, meta) {
+    showError(null);
+    document.getElementById('copy-part1').style.display = 'none';
+    document.getElementById('copy-part2').style.display = 'none';
+    part1Text = "";
+    part2Text = "";
 
-        let cleanTtml = rawTtml;
-        if (!cleanTtml.endsWith('</tt>')) {
-            if (cleanTtml.includes('</body>')) cleanTtml += '</tt>';
-            else if (cleanTtml.includes('</div>')) cleanTtml += '</body></tt>';
-            else if (cleanTtml.includes('</p>')) cleanTtml += '</div></body></tt>';
-        }
+    let cleanTtml = rawTtml;
+    if (!cleanTtml.endsWith('</tt>')) {
+        if (cleanTtml.includes('</body>')) cleanTtml += '</tt>';
+        else if (cleanTtml.includes('</div>')) cleanTtml += '</body></tt>';
+        else if (cleanTtml.includes('</p>')) cleanTtml += '</div></body></tt>';
+    }
 
-        const keepParentheses = document.getElementById('keep-parentheses').checked;
+    const keepParentheses = document.getElementById('keep-parentheses').checked;
+    
+    // If unchecked, surgically find all spans with x-bg and strip just their outer parentheses
+    if (!keepParentheses) {
+        cleanTtml = cleanTtml.replace(/(<span[^>]*ttm:role="x-bg"[^>]*>)\(([\s\S]*?)\)(<\/span>)/g, '$1$2$3');
+    }
+
+    // Output the beautiful code view
+    const prettyXML = formatXml(cleanTtml);
+    document.getElementById('ttml-output').innerText = prettyXML;
+    
+    if(meta) {
+        document.getElementById('meta-output').innerHTML = `<strong>Asset Profile:</strong> ${meta.artist} - ${meta.title} (${meta.album || 'Single'})`;
+    } else {
+        document.getElementById('meta-output').innerHTML = `<strong>Asset Profile:</strong> Apple TTML Document Engine`;
+    }
+
+    // Parse the finalized string once for the visual screen preview container
+    const parser = new DOMParser();
+    const xmlDoc = parser.parseFromString(cleanTtml, "text/xml");
+    const paragraphs = xmlDoc.getElementsByTagName("p");
+    let lyricsHtml = "";
+    
+    for (let p of paragraphs) {
+        let lineHtml = "";
         
-        // Parse into temporary DOM to interact with elements cleanly
-        const parser = new DOMParser();
-        let xmlDoc = parser.parseFromString(cleanTtml, "text/xml");
-
-        // Find background vocal highlights
-        const bgSpans = xmlDoc.querySelectorAll('span[ttm\\:role="x-bg"]');
-        
-        bgSpans.forEach(span => {
-            if (!keepParentheses) {
-                // If UNCHECKED, surgically drop ONLY the outer enclosing parentheses
-                span.textContent = span.textContent.replace(/^[\(\)]|[\(\)]$/g, '').replace(/[\(\)]/g, '');
-            }
-        });
-
-        // Serialize the clean structural elements back to text layout
-        const serializer = new XMLSerializer();
-        cleanTtml = serializer.serializeToString(xmlDoc);
-
-        const prettyXML = formatXml(cleanTtml);
-        document.getElementById('ttml-output').innerText = prettyXML;
-        
-        if(meta) {
-            document.getElementById('meta-output').innerHTML = `<strong>Asset Profile:</strong> ${meta.artist} - ${meta.title} (${meta.album || 'Single'})`;
-        } else {
-            document.getElementById('meta-output').innerHTML = `<strong>Asset Profile:</strong> Apple TTML Document Engine`;
-        }
-
-        // Render visual live track updates below
-        const paragraphs = xmlDoc.getElementsByTagName("p");
-        let lyricsHtml = "";
-        for (let p of paragraphs) {
-            let lineHtml = "";
-            
-            for(let child of p.childNodes) {
-                if (child.nodeType === Node.ELEMENT_NODE && child.tagName === "span") {
-                    if (child.getAttribute("ttm:role") === "x-bg") {
-                        lineHtml += `<span class="bg-vocal-text">${child.textContent}</span>`;
-                    } else {
-                        lineHtml += child.textContent;
-                    }
-                } else if (child.nodeType === Node.TEXT_NODE) {
+        for(let child of p.childNodes) {
+            if (child.nodeType === Node.ELEMENT_NODE && child.tagName === "span") {
+                if (child.getAttribute("ttm:role") === "x-bg") {
+                    lineHtml += `<span class="bg-vocal-text">${child.textContent}</span>`;
+                } else {
                     lineHtml += child.textContent;
                 }
-            }
-            
-            const agent = p.getAttribute("ttm:agent") || "v1";
-            if(lineHtml.trim()) {
-                lyricsHtml += `<div class="lyrics-line"><strong>[${agent}]</strong> ${lineHtml}</div>`;
+            } else if (child.nodeType === Node.TEXT_NODE) {
+                lineHtml += child.textContent;
             }
         }
         
-        document.getElementById('lines-output').innerHTML = lyricsHtml || "No active elements processed.";
-        document.getElementById('output-section').style.display = 'block';
+        const agent = p.getAttribute("ttm:agent") || "v1";
+        if(lineHtml.trim()) {
+            lyricsHtml += `<div class="lyrics-line"><strong>[${agent}]</strong> ${lineHtml}</div>`;
+        }
     }
+    
+    document.getElementById('lines-output').innerHTML = lyricsHtml || "No active elements processed.";
+    document.getElementById('output-section').style.display = 'block';
+}
+
 
     function splitTtml() {
         const fullText = document.getElementById('ttml-output').innerText;
