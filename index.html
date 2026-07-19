@@ -14,7 +14,12 @@
             src: url("https://raw.githubusercontent.com/sahibjotsaggu/San-Francisco-Pro-Fonts/master/SF-Pro.ttf") format("truetype");
             font-display: swap;
         }
-
+       @font-face {
+           font-family: "SF Mono";
+           src: url("https://raw.githubusercontent.com/supercomputra/SF-Mono-Font/master/SFMono-Regular.otf") format("opentype");
+            font-display: swap;
+       }
+        
         :root {
             --bg-color: #121212;
             --card-bg: #1e1e1e;
@@ -242,6 +247,9 @@
         .bg-vocal-text {
             color: var(--text-muted);
             font-style: italic;
+        }
+        pre, textarea {
+    font-family: "SF Mono", SFMono-Regular, Consolas, monospace !important;
         }
     </style>
 </head>
