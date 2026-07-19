@@ -417,9 +417,9 @@ function renderDisplay(rawTtml, meta) {
 
     const keepParentheses = document.getElementById('keep-parentheses').checked;
     
-    // If unchecked, surgically find all spans with x-bg and strip just their outer parentheses
+    // If unchecked, this pattern captures the span opening, handles inner spaces/parentheses flexibly, and strips them out cleanly
     if (!keepParentheses) {
-        cleanTtml = cleanTtml.replace(/(<span[^>]*ttm:role="x-bg"[^>]*>)\(([\s\S]*?)\)(<\/span>)/g, '$1$2$3');
+        cleanTtml = cleanTtml.replace(/(<span[^>]*ttm:role="x-bg"[^>]*>)\s*\(([\s\S]*?)\)\s*(<\/span>)/g, '$1$2$3');
     }
 
     // Output the beautiful code view
