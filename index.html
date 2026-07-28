@@ -342,218 +342,483 @@
 </div>
 
 <script>
-    let part1Text = "";
-    let part2Text = "";
+    class MusicCatalogAPI {
+        async getCatalogInfo(query, storefront = "us", mode = "song", offset = 0) {
+            const rawTitle = (query.title || '').trim();
+            const rawArtist = (query.artistName || '').trim();
 
-    function switchTab(tab) {
-        document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-        if (tab === 'json') {
-            document.querySelectorAll('.tab-btn')[0].classList.add('active');
-            document.getElementById('json-section').style.display = 'block';
-            document.getElementById('api-section').style.display = 'none';
-        } else {
-            document.querySelectorAll('.tab-btn')[1].classList.add('active');
-            document.getElementById('json-section').style.display = 'none';
-            document.getElementById('api-section').style.display = 'block';
+            if (!rawTitle && !rawArtist) return null;
+
+            let result = await this._executeSearch(`${rawTitle} ${rawArtist}`, storefront, mode, offset);
+
+            if (!result && rawTitle.includes("(")) {
+                const strippedTitle = rawTitle.replace(/\([^\)]*\)/g, "").trim();
+                result = await this._executeSearch(`${strippedTitle} ${rawArtist}`, storefront, mode, offset);
+            }
+
+            if (!result && rawTitle) {
+                result = await this._executeSearch(rawTitle, storefront, mode, offset);
+            }
+
+            return result;
         }
+
+        async _executeSearch(searchTerm, storefront, mode, offset) {
+            if (!searchTerm.trim()) return null;
+
+            const entity = mode === "album" ? "album" : "song";
+
+            const params = new URLSearchParams({
+                term: searchTerm.trim(),
+                country: storefront || 'us',
+                media: 'music',
+                entity: entity,
+                limit: '25'
+            });
+
+            const targetUrl = `https://itunes.apple.com/search?${params.toString()}`;
+
+            try {
+                const response = await fetch(targetUrl);
+                if (!response.ok) return null;
+
+                const data = await response.json();
+                const results = data.results || [];
+
+                if (results.length === 0 || offset >= results.length) return null;
+
+                const item = results[offset];
+
+                const rawCover = item.artworkUrl100 || "";
+                const artworkUrl = rawCover ? rawCover.replace("100x100bb", "1000x1000bb") : "";
+
+                const title = item.trackName || item.collectionName || "Unknown Title";
+                const id = String(item.trackId || item.collectionId || "");
+                const isExplicit = (item.trackExplicitness === "explicit" || item.collectionExplicitness === "explicit");
+
+                return {
+                    title: title,
+                    artistName: item.artistName,
+                    collectionName: item.collectionName,
+                    albumCoverLink: artworkUrl,
+                    appleID: id,
+                    isExplicit: isExplicit,
+                    motionM3u8: item.motionM3u8 || null,
+                    motionMp4: item.motionMp4 || null
+                };
+            } catch (e) {
+                console.error("iTunes Search API Error:", e);
+                return null;
+            }
+        }
+    }
+
+    class TTMLService {
+        static async fetchTTML(songId) {
+            try {
+                const url = `https://lyrics.paxsenix.org/apple-music/lyrics?id=${songId}&ttml=true`;
+                const response = await fetch(url);
+                if (!response.ok) return null;
+
+                const data = await response.json();
+                if (data.type === 'TTML' && data.content) {
+                    return data.content; 
+                }
+                return null;
+            } catch (e) {
+                console.error("Error fetching TTML from Paxsenix:", e);
+                return null;
+            }
+        }
+
+        static parseTTMLToStructuredLyrics(xmlString) {
+            if (!xmlString) return { timingType: 'None', lines: [] };
+
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(xmlString, "text/xml");
+            
+            const ttElement = xmlDoc.querySelector('tt');
+            const timingType = ttElement ? (ttElement.getAttribute('itunes:timing') || 'None') : 'None';
+
+            const paragraphs = xmlDoc.querySelectorAll('p');
+            const structuredLines = [];
+
+            paragraphs.forEach((p, lineIdx) => {
+                const songPart = p.closest('div')?.getAttribute('itunes:songPart') || 'Verse';
+                const isBackground = p.getAttribute('ttm:role') === 'x-bg';
+
+                let fullText = "";
+
+                if (timingType === 'Word') {
+                    const spans = Array.from(p.querySelectorAll('span'));
+                    const directSpans = spans.filter(span => !span.querySelector('span'));
+                    fullText = directSpans.map(s => s.textContent).join('').trim();
+                } else {
+                    fullText = p.textContent.trim();
+                }
+
+                if (fullText) {
+                    structuredLines.push({
+                        lineId: `L${lineIdx + 1}`,
+                        section: songPart,
+                        isBackground: isBackground,
+                        fullText: fullText
+                    });
+                }
+            });
+
+            return {
+                timingType: timingType,
+                lines: structuredLines
+            };
+        }
+    }
+
+    const catalogService = new MusicCatalogAPI();
+    let debounceTimer = null;
+    let currentCatalogId = "";
+    let currentMode = "song"; 
+    let currentTrackTitle = "";
+    let currentArtistName = "";
+
+    let currentRawTTML = "";
+    let ttmlPart1 = "";
+    let ttmlPart2 = "";
+
+    function toggleSearchMode() {
+        currentMode = (currentMode === "song") ? "album" : "song";
+
+        const songInput = document.getElementById('song-input');
+        const searchIcon = document.getElementById('song-input-icon');
+
+        if (currentMode === "album") {
+            songInput.placeholder = "Album";
+            if (searchIcon) searchIcon.src = "ics/album.svg";
+        } else {
+            songInput.placeholder = "Song";
+            if (searchIcon) searchIcon.src = "ics/note.svg";
+        }
+
+        if (searchIcon) {
+            searchIcon.classList.remove('copy-animated');
+            void searchIcon.offsetWidth;
+            searchIcon.classList.add('copy-animated');
+        }
+
+        handleSearch();
+    }
+
+    function handleSearch() {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(performSearch, 400);
     }
 
     function showError(msg) {
-        const errDiv = document.getElementById('error-message');
-        if(msg) {
-            errDiv.innerText = msg;
-            errDiv.style.display = 'block';
+        const errorBox = document.getElementById('error-box');
+        if (msg) {
+            errorBox.innerText = msg;
+            errorBox.style.display = 'block';
+            document.getElementById('result-card').style.display = 'none';
+            const lyricsContainer = document.getElementById('lyrics-container');
+            const lyricsActions = document.getElementById('lyrics-actions');
+            if (lyricsContainer) lyricsContainer.style.display = 'none';
+            if (lyricsActions) lyricsActions.style.display = 'none';
         } else {
-            errDiv.style.display = 'none';
+            errorBox.style.display = 'none';
         }
     }
 
-    function formatXml(xml) {
-        let formatted = '';
-        let reg = /(>)(<)(\/*)(head|body|div|p|tt|metadata|songwriters|songwriter|iTunesMetadata)/g;
-        xml = xml.replace(reg, '$1\r\n$2$3$4');
-        let pad = 0;
-        
-        xml.split('\r\n').forEach(function(node) {
-            let indent = 0;
-            if (node.match( /.+<\/(head|body|div|p|tt|metadata|songwriters|songwriter|iTunesMetadata)[^>]*>$/ )) {
-                indent = 0;
-            } else if (node.match( /^<\/(head|body|div|p|tt|metadata|songwriters|songwriter|iTunesMetadata)/ )) {
-                if (pad != 0) pad -= 1;
-            } else if (node.match( /^<(head|body|div|p|tt|metadata|songwriters|songwriter|iTunesMetadata)[^>]*[^\/]>/ )) {
-                indent = 1;
-            } else {
-                indent = 0;
-            }
+    async function resolveBestM3u8Variant(masterUrl) {
+        try {
+            const corsProxy = "https://corsproxy.io/?";
+            const response = await fetch(corsProxy + encodeURIComponent(masterUrl));
+            if (!response.ok) return masterUrl;
 
-            let padding = '';
-            for (let i = 0; i < pad; i++) padding += '  ';
-            formatted += padding + node + '\r\n';
-            pad += indent;
-        });
-        return formatted.trim();
-    }
+            const text = await response.text();
+            const lines = text.split('\n');
+            
+            let maxBandwidth = 0;
+            let bestVariantUrl = null;
 
-function renderDisplay(rawTtml, meta) {
-    showError(null);
-    document.getElementById('copy-part1').style.display = 'none';
-    document.getElementById('copy-part2').style.display = 'none';
-    part1Text = "";
-    part2Text = "";
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i].trim();
 
-    let cleanTtml = rawTtml;
-    if (!cleanTtml.endsWith('</tt>')) {
-        if (cleanTtml.includes('</body>')) cleanTtml += '</tt>';
-        else if (cleanTtml.includes('</div>')) cleanTtml += '</body></tt>';
-        else if (cleanTtml.includes('</p>')) cleanTtml += '</div></body></tt>';
-    }
+                if (line.startsWith('#EXT-X-STREAM-INF:') && !line.includes('trickplay')) {
+                    const bandwidthMatch = line.match(/BANDWIDTH=(\d+)/);
+                    const bandwidth = bandwidthMatch ? parseInt(bandwidthMatch[1], 10) : 0;
+                    const nextLine = lines[i + 1] ? lines[i + 1].trim() : '';
 
-    const keepParentheses = document.getElementById('keep-parentheses').checked;
-    
-    const parser = new DOMParser();
-    let xmlDoc = parser.parseFromString(cleanTtml, "text/xml");
-
-    if (!keepParentheses) {
-        const allElements = xmlDoc.getElementsByTagName("*");
-        
-        for (let el of allElements) {
-            let isBgVocal = false;
-            for (let attr of el.attributes) {
-                if (attr.value.includes("x-bg")) {
-                    isBgVocal = true;
-                    break;
-                }
-            }
-
-            // If it's a background element, strip every single parenthesis inside it completely
-            if (isBgVocal) {
-                const iterator = xmlDoc.createNodeIterator(el, NodeFilter.SHOW_TEXT);
-                let textNode;
-                while (textNode = iterator.nextNode()) {
-                    textNode.nodeValue = textNode.nodeValue.replace(/[\(\[\{\)\]\}]/g, '');
-                }
-            }
-        }
-
-        const serializer = new XMLSerializer();
-        cleanTtml = serializer.serializeToString(xmlDoc);
-    }
-
-    const prettyXML = formatXml(cleanTtml);
-    document.getElementById('ttml-output').innerText = prettyXML;
-    
-    if(meta) {
-        document.getElementById('meta-output').innerHTML = `<strong>Asset Profile:</strong> ${meta.artist} - ${meta.title} (${meta.album || 'Single'})`;
-    } else {
-        document.getElementById('meta-output').innerHTML = `<strong>Asset Profile:</strong> Apple TTML Document Engine`;
-    }
-
-    // Render clean interactive view elements below
-    const viewDoc = parser.parseFromString(cleanTtml, "text/xml");
-    const paragraphs = viewDoc.getElementsByTagName("p");
-    let lyricsHtml = "";
-    for (let p of paragraphs) {
-        let lineHtml = "";
-        
-        for(let child of p.childNodes) {
-            if (child.nodeType === Node.ELEMENT_NODE && child.tagName === "span") {
-                let isBgSpan = false;
-                for (let attr of child.attributes) {
-                    if (attr.value.includes("x-bg")) {
-                        isBgSpan = true;
-                        break;
+                    if (bandwidth > maxBandwidth && nextLine) {
+                        maxBandwidth = bandwidth;
+                        bestVariantUrl = nextLine;
                     }
                 }
-                if (isBgSpan) {
-                    lineHtml += `<span class="bg-vocal-text">${child.textContent}</span>`;
-                } else {
-                    lineHtml += child.textContent;
-                }
-            } else if (child.nodeType === Node.TEXT_NODE) {
-                lineHtml += child.textContent;
             }
-        }
-        
-        const agent = p.getAttribute("ttm:agent") || "v1";
-        if(lineHtml.trim()) {
-            lyricsHtml += `<div class="lyrics-line"><strong>[${agent}]</strong> ${lineHtml}</div>`;
-        }
-    }
-    
-    document.getElementById('lines-output').innerHTML = lyricsHtml || "No active elements processed.";
-    document.getElementById('output-section').style.display = 'block';
-}
 
-    function splitTtml() {
-        const fullText = document.getElementById('ttml-output').innerText;
-        if (!fullText) return;
-
-        const midPoint = Math.floor(fullText.length / 2);
-        const nextNewLine = fullText.indexOf('\n', midPoint);
-        
-        if (nextNewLine !== -1) {
-            part1Text = fullText.substring(0, nextNewLine);
-            part2Text = fullText.substring(nextNewLine);
-        } else {
-            part1Text = fullText.substring(0, midPoint);
-            part2Text = fullText.substring(midPoint);
+            if (bestVariantUrl) {
+                return new URL(bestVariantUrl, masterUrl).href;
+            }
+        } catch (e) {
+            console.warn("Failed to parse master m3u8 playlist, falling back to original source:", e);
         }
-
-        document.getElementById('copy-part1').style.display = 'inline-block';
-        document.getElementById('copy-part2').style.display = 'inline-block';
-        alert("Text broken successfully! Use the 'Copy Part 1' and 'Copy Part 2' buttons below.");
+        return masterUrl;
     }
 
-    function copyPart(partNumber, buttonElement) {
-        const textToCopy = partNumber === 1 ? part1Text : part2Text;
-        copyToClipboard(textToCopy, buttonElement);
+    async function loadArtworkPipeline(staticImgUrl, m3u8Url = null, mp4Url = null) {
+        const artworkImg = document.getElementById('artwork-img');
+        const videoEl = document.getElementById('artwork-video');
+
+        artworkImg.src = staticImgUrl || "";
+
+        if (!videoEl) return;
+
+        videoEl.pause();
+        videoEl.style.display = 'none';
+
+        if (!m3u8Url && !mp4Url) {
+            videoEl.removeAttribute('src');
+            return;
+        }
+
+        const tryVideoSource = (src) => {
+            return new Promise((resolve) => {
+                videoEl.src = src;
+                videoEl.oncanplay = () => resolve(true);
+                videoEl.onerror = () => resolve(false);
+                videoEl.load();
+            });
+        };
+
+        const supportsNativeHLS = videoEl.canPlayType('application/vnd.apple.mpegurl') !== '';
+        let isVideoReady = false;
+
+        if (m3u8Url) {
+            m3u8Url = await resolveBestM3u8Variant(m3u8Url);
+        }
+
+        if (m3u8Url && supportsNativeHLS) {
+            isVideoReady = await tryVideoSource(m3u8Url);
+        }
+
+        if (!isVideoReady && mp4Url) {
+            isVideoReady = await tryVideoSource(mp4Url);
+        }
+
+        if (isVideoReady) {
+            videoEl.style.display = 'block';
+            videoEl.play().catch(() => {
+                videoEl.style.display = 'none';
+            });
+        }
     }
 
-    function copyToClipboard(text, btn) {
-        navigator.clipboard.writeText(text).then(() => {
-            const oldText = btn.innerText;
-            btn.innerText = "Copied!";
-            setTimeout(() => { btn.innerText = oldText; }, 2000);
+    function renderLyricsUI(structuredData) {
+        const lyricsContainer = document.getElementById('lyrics-container');
+        const syncBadge = document.getElementById('sync-badge');
+        const lyricsBody = document.getElementById('lyrics-body');
+
+        if (!lyricsContainer || !lyricsBody) return;
+
+        if (!structuredData || !structuredData.lines || structuredData.lines.length === 0) {
+            lyricsContainer.style.display = 'none';
+            return;
+        }
+
+        if (syncBadge) {
+            syncBadge.innerText = `${structuredData.timingType} Synced`;
+        }
+
+        let currentSection = null;
+        let htmlContent = '';
+
+        structuredData.lines.forEach((line) => {
+            if (line.section && line.section !== currentSection) {
+                currentSection = line.section;
+                htmlContent += `<div class="section-label">${currentSection}</div>`;
+            }
+
+            const bgClass = line.isBackground ? 'is-bg' : '';
+            htmlContent += `<div class="lyric-line ${bgClass}">${line.fullText}</div>`;
+        });
+
+        lyricsBody.innerHTML = htmlContent;
+        lyricsContainer.style.display = 'block';
+    }
+
+    function copyFullTTML() {
+        if (!currentRawTTML) return;
+        navigator.clipboard.writeText(currentRawTTML).then(() => {
+            alert("Full TTML copied to clipboard!");
         });
     }
 
-    function processJSON() {
-        const inputData = document.getElementById('json-input').value.trim();
-        if(!inputData) return showError("Please input a valid JSON string payload.");
+    // DOM-based Split Function (Prevents redundant xmlns attributes on child nodes)
+    function splitTTML() {
+        if (!currentRawTTML) return;
 
-        try {
-            const parsed = JSON.parse(inputData);
-            if (!parsed.ttml) {
-                throw new Error("Missing structural property element 'ttml' in JSON payload.");
+        const parser = new DOMParser();
+        const serializer = new XMLSerializer();
+
+        // Create 2 distinct DOM document trees
+        const doc1 = parser.parseFromString(currentRawTTML, "text/xml");
+        const doc2 = parser.parseFromString(currentRawTTML, "text/xml");
+
+        const p1 = Array.from(doc1.querySelectorAll("p"));
+        const p2 = Array.from(doc2.querySelectorAll("p"));
+
+        if (p1.length === 0) return;
+
+        const halfIndex = Math.ceil(p1.length / 2);
+
+        // Remove the second half of paragraphs from Document 1
+        p1.slice(halfIndex).forEach(p => p.remove());
+
+        // Remove the first half of paragraphs from Document 2
+        p2.slice(0, halfIndex).forEach(p => p.remove());
+
+        // Remove empty div containers left behind in either document
+        [doc1, doc2].forEach(doc => {
+            doc.querySelectorAll("body div").forEach(div => {
+                if (div.querySelectorAll("p").length === 0) {
+                    div.remove();
+                }
+            });
+        });
+
+        const xmlHeader = '<?xml version="1.0" encoding="UTF-8"?>\n';
+
+        ttmlPart1 = xmlHeader + serializer.serializeToString(doc1);
+        ttmlPart2 = xmlHeader + serializer.serializeToString(doc2);
+
+        const splitBtn = document.getElementById('split-btn');
+        const splitContainer = document.getElementById('split-parts-container');
+
+        if (splitBtn) splitBtn.style.display = 'none';
+        if (splitContainer) splitContainer.style.display = 'inline-flex';
+    }
+
+    function copyTTMLPart(partNumber) {
+        const textToCopy = partNumber === 1 ? ttmlPart1 : ttmlPart2;
+        if (!textToCopy) return;
+
+        navigator.clipboard.writeText(textToCopy).then(() => {
+            alert(`TTML Part ${partNumber} copied!`);
+        });
+    }
+
+    function downloadTTML() {
+        if (!currentRawTTML) return;
+
+        const rawFileName = (currentArtistName && currentTrackTitle)
+            ? `${currentArtistName} - ${currentTrackTitle}`
+            : `lyrics_${currentCatalogId}`;
+            
+        const safeFileName = rawFileName.replace(/[/\\?%*:|"<>]/g, '') + '.ttml';
+
+        const blob = new Blob([currentRawTTML], { type: "application/xml" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = safeFileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    async function performSearch() {
+        showError(null);
+
+        const title = document.getElementById('song-input').value.trim();
+        const artistName = document.getElementById('artist-input').value.trim();
+        const storefront = document.getElementById('storefront-select').value;
+
+        if (!title && !artistName) {
+            document.getElementById('result-card').style.display = 'none';
+            const lyricsContainer = document.getElementById('lyrics-container');
+            const lyricsActions = document.getElementById('lyrics-actions');
+            if (lyricsContainer) lyricsContainer.style.display = 'none';
+            if (lyricsActions) lyricsActions.style.display = 'none';
+            return;
+        }
+
+        const info = await catalogService.getCatalogInfo({ title, artistName }, storefront, currentMode);
+
+        if (!info) {
+            return showError("No catalog matches found.");
+        }
+
+        currentCatalogId = info.appleID;
+        currentTrackTitle = info.title;
+        currentArtistName = info.artistName;
+
+        const titleContainer = document.getElementById('res-song-title');
+        titleContainer.innerText = info.title;
+        
+        let explicitIcon = document.getElementById('explicit-badge');
+        if (info.isExplicit) {
+            if (!explicitIcon) {
+                explicitIcon = document.createElement('img');
+                explicitIcon.id = 'explicit-badge';
+                explicitIcon.src = 'ics/e.svg';
+                explicitIcon.style.cssText = 'width: 16px; height: 16px; margin-left: 6px; vertical-align: middle;';
             }
-            const meta = parsed.processingTime ? parsed.processingTime.cachedMeta : null;
-            renderDisplay(parsed.ttml, meta);
-        } catch(e) {
-            showError("Invalid JSON structure format: " + e.message);
+            titleContainer.appendChild(explicitIcon);
+        } else if (explicitIcon) {
+            explicitIcon.remove();
+        }
+
+        if (info.collectionName && info.collectionName !== info.title) {
+            document.getElementById('res-artist-name').innerText = `${info.artistName} • ${info.collectionName}`;
+        } else {
+            document.getElementById('res-artist-name').innerText = info.artistName;
+        }
+
+        document.getElementById('res-id-text').innerText = `ID: ${info.appleID}`;
+        
+        loadArtworkPipeline(info.albumCoverLink, info.motionM3u8, info.motionMp4);
+
+        document.getElementById('result-card').style.display = 'flex';
+
+        // Fetch & parse Paxsenix Apple TTML Lyrics
+        const lyricsActions = document.getElementById('lyrics-actions');
+        const splitBtn = document.getElementById('split-btn');
+        const splitParts = document.getElementById('split-parts-container');
+
+        if (currentMode === "song" && currentCatalogId) {
+            currentRawTTML = await TTMLService.fetchTTML(currentCatalogId);
+            
+            if (currentRawTTML) {
+                const structuredLyrics = TTMLService.parseTTMLToStructuredLyrics(currentRawTTML);
+                renderLyricsUI(structuredLyrics);
+
+                if (splitParts) splitParts.style.display = 'none';
+                if (splitBtn) splitBtn.style.display = 'inline-flex';
+                if (lyricsActions) lyricsActions.style.display = 'flex';
+            } else {
+                currentRawTTML = "";
+                renderLyricsUI(null);
+                if (lyricsActions) lyricsActions.style.display = 'none';
+            }
+        } else {
+            currentRawTTML = "";
+            renderLyricsUI(null);
+            if (lyricsActions) lyricsActions.style.display = 'none';
         }
     }
 
-    async function fetchFromAPI() {
-        const artist = encodeURIComponent(document.getElementById('api-artist').value.trim());
-        const title = encodeURIComponent(document.getElementById('api-title').value.trim());
-        if(!artist || !title) return showError("Both Title and Artist strings must be filled.");
-        
-        showError("Fetching remote endpoint asset streams...");
-        try {
-            const targetUrl = `https://lyrics.geeked.wtf/v1/ttml/get?title=${title}&artist=${artist}`;
-            const response = await fetch(targetUrl);
-            if(!response.ok) throw new Error("HTTP connection error state target " + response.status);
-            
-            const data = await response.json();
-            if(data && data.ttml) {
-                const meta = data.processingTime ? data.processingTime.cachedMeta : { artist: decodeURIComponent(artist), title: decodeURIComponent(title) };
-                renderDisplay(data.ttml, meta);
-            } else {
-                throw new Error("Response body returned empty data fields.");
+    function copySongId(pillElement) {
+        if (!currentCatalogId) return;
+
+        navigator.clipboard.writeText(currentCatalogId).then(() => {
+            const iconImg = document.getElementById('copy-icon');
+            if (iconImg) {
+                iconImg.src = "ics/dodf.svg";
+                setTimeout(() => {
+                    iconImg.src = "ics/dod.svg";
+                }, 1800);
             }
-        } catch(e) {
-            showError("Network asset error pipeline breakdown: " + e.message + ". If CORS errors occur, paste the JSON output manually instead.");
-        }
+        });
     }
 </script>
 </body>
