@@ -540,17 +540,42 @@ function renderDisplay(rawTtml, meta) {
         
         showError("Fetching remote endpoint asset streams...");
         try {
-            const targetUrl = `https://lyrics.geeked.wtf/v1/ttml/get?title=${title}&artist=${artist}`;
-            const response = await fetch(targetUrl);
-            if(!response.ok) throw new Error("HTTP connection error state target " + response.status);
-            
-            const data = await response.json();
-            if(data && data.ttml) {
-                const meta = data.processingTime ? data.processingTime.cachedMeta : { artist: decodeURIComponent(artist), title: decodeURIComponent(title) };
-                renderDisplay(data.ttml, meta);
-            } else {
-                throw new Error("Response body returned empty data fields.");
+            const endpoints = [
+                `https://lyrics.geeked.wtf/v1/ttml/get?title=${title}&artist=${artist}`,
+                `https://lyricsplus.prjktla.my.id/v1/ttml/get?title=${title}&artist=${artist}`
+            ];
+
+            let data = null;
+            let lastError = null;
+
+            for (const targetUrl of endpoints) {
+                try {
+                    const response = await fetch(targetUrl);
+                    if(!response.ok) {
+                        lastError = new Error("HTTP connection error state target " + response.status + " at " + targetUrl);
+                        continue;
+                    }
+
+                    const json = await response.json();
+                    if (json && json.ttml) {
+                        data = json;
+                        data._fetchedFrom = targetUrl;
+                        break;
+                    } else {
+                        lastError = new Error("Response body returned empty data fields from " + targetUrl);
+                    }
+                } catch(e) {
+                    lastError = e;
+                    // try next endpoint
+                }
             }
+
+            if(!data || !data.ttml) {
+                throw lastError || new Error("No endpoint returned TTML data.");
+            }
+
+            const meta = data.processingTime ? data.processingTime.cachedMeta : { artist: decodeURIComponent(artist), title: decodeURIComponent(title) };
+            renderDisplay(data.ttml, meta);
         } catch(e) {
             showError("Network asset error pipeline breakdown: " + e.message + ". If CORS errors occur, paste the JSON output manually instead.");
         }
